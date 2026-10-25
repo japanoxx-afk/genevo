@@ -19,7 +19,7 @@ GitHub Releases의 `genevo-win-x64.zip`을 풀고 `GenevoLauncher.exe`를 실행
 | 기능 | 상태 |
 | --- | --- |
 | 매 실행 GitHub 버전 확인 | 구현, 공개 Releases 사용 |
-| 새 버전 자동 다운로드·검증·전환 | 구현, 실서버 업그레이드 검증은 추후 필요 |
+| 새 버전 자동 다운로드·검증·전환 | GitHub v0.1.1 패키지로 설치·전환 검증 완료 |
 | 오프라인/릴리스 미등록 시 기존 버전 실행 | 구현 |
 | 공식 GenEvo 런처 연결 | 구현, 실제 게임 실행은 수동 확인 필요 |
 | 리플레이 맵·플레이어 이름 | 실제 로컬 리플레이 파싱 검증 |
@@ -65,5 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1
 ```
 
 자가 검증은 헤더 파싱, 잘못된 파일 거부, 로컬 리플레이가 있을 때 실제 파일 파싱, HUD 이미지 생성을 확인합니다. 출력은 `%LOCALAPPDATA%/GenevoObserver/test-result.txt`와 `hud-preview.png`입니다.
+
+2026-10-26 로컬 검증: 초기 버전으로 표시한 별도 테스트 폴더에서 부트스트랩을 실행해 GitHub Releases의 v0.1.1 다운로드, SHA-256 확인, 버전 폴더 설치, current.txt 전환 및 설치된 EXE 실행을 확인했습니다. 릴리스가 없을 때 기존 EXE로 돌아오는 동작도 확인했습니다. 실제 게임 리플레이 위의 표시·캡처와 GenEvo 실행 호환성은 아직 검증하지 않았습니다.
 
 참고: [RA3ReplayParser 헤더 형식](https://github.com/NeWive/RA3ReplayParser), [RA3 리플레이 컨테이너 문서](https://github.com/Abgetrennter/RA3-Replay-Format/blob/master/docs/01-container.md). 외부 소스 코드를 복사하지 않았습니다.
