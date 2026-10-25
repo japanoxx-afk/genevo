@@ -1,4 +1,4 @@
-param([int]$WaitForPid = 0)
+﻿param([int]$WaitForPid = 0)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $root = Split-Path $PSScriptRoot

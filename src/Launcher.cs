@@ -11,7 +11,7 @@ using System.Windows.Forms;
 using System.Web.Script.Serialization;
 using System.Collections.Generic;
 
-[assembly: System.Reflection.AssemblyVersion("0.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.1.1.0")]
 namespace Genevo {
 static class Program {
     public static string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GenevoObserver");
@@ -88,7 +88,7 @@ class Launcher : Form {
     public Launcher(bool preview) {
         Text="GENEVO / OBSERVER"; ClientSize=new Size(820,620); MinimumSize=new Size(836,659); BackColor=Color.FromArgb(13,22,30); ForeColor=Color.White; Font=new Font("Malgun Gothic",10); StartPosition=FormStartPosition.CenterScreen;
         Label title=new Label {Text="GENEVO",Font=new Font("Segoe UI",30,FontStyle.Bold),AutoSize=true,Location=new Point(30,20)}; Controls.Add(title);
-        Controls.Add(new Label {Text="REPLAY OBSERVER  /  v0.1.0",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
+        Controls.Add(new Label {Text="REPLAY OBSERVER  /  v0.1.1",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
         game=PathRow("RED ALERT 3",settings.GamePath,125,false); mod=PathRow("GENEVO MOD",settings.ModPath,202,false); replay=PathRow("REPLAY",settings.Replay,279,true);
         Button play=Button("GenEvo 공식 런처 실행",30,370,235); play.Click+=(s,e)=>Safe(()=> {Save(); string exe=Path.Combine(settings.ModPath,"GenEvoLauncher.exe"); if(!File.Exists(exe))throw new FileNotFoundException("GenEvoLauncher.exe 경로를 확인하세요."); Process.Start(new ProcessStartInfo(exe){WorkingDirectory=settings.ModPath,UseShellExecute=true});});
         Button open=Button("리플레이 폴더",280,370,180); open.Click+=(s,e)=>Safe(()=> {string p=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),@"Red Alert 3\Replays"); Directory.CreateDirectory(p); Process.Start("explorer.exe",p);});
@@ -139,7 +139,7 @@ class Overlay : Form {
     void CaptureRadar() {
         if(settings.RadarW<=0||settings.RadarH<=0)return;
         Rectangle r=new Rectangle((int)(settings.RadarX*Width),(int)(settings.RadarY*Height),(int)(settings.RadarW*Width),(int)(settings.RadarH*Height));
-        Rectangle destination=new Rectangle(12,Height-250,238,238);
+        int side=Math.Min(238,Math.Max(130,Width/5));Rectangle destination=new Rectangle(12,Height-side-12,side,side);
         if(r.Width<20||r.Height<20||!ClientRectangle.Contains(r)||r.IntersectsWith(destination)){captureState="미니맵 원본 위치를 다시 지정하세요";if(radar!=null){radar.Dispose();radar=null;}return;}
         try{using(var b=new Bitmap(r.Width,r.Height)){using(var g=Graphics.FromImage(b))g.CopyFromScreen(gameBounds.X+r.X,gameBounds.Y+r.Y,0,0,r.Size,CopyPixelOperation.SourceCopy);if(radar!=null)radar.Dispose();radar=new Bitmap(b);}captureState="LIVE RADAR";}catch{captureState="미니맵 캡처 실패";if(radar!=null){radar.Dispose();radar=null;}}
     }
@@ -179,6 +179,7 @@ static class Tests {
             string real=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),@"Red Alert 3\Replays\LazvsGLAV#2.RA3Replay");
             var info=File.Exists(real)?ReplayInfo.Read(real):new ReplayInfo();if(File.Exists(real)&&info.Players.Count!=2)throw new Exception("Real replay parsing failed");
             using(var form=new Overlay(new Settings(),info,true))using(var bitmap=new Bitmap(1330,736))using(var graphics=Graphics.FromImage(bitmap)){form.Render(graphics,bitmap.Size);bitmap.Save(Path.Combine(Program.Data,"hud-preview.png"));}
+            using(var launcher=new Launcher(false)){launcher.Show();Application.DoEvents();using(var bitmap=new Bitmap(launcher.Width,launcher.Height)){launcher.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));bitmap.Save(Path.Combine(Program.Data,"launcher-preview.png"));}launcher.Close();}
             File.WriteAllText(Path.Combine(Program.Data,"test-result.txt"),"PASS: replay metadata, malformed replay, real replay, HUD render");return 0;
         }catch(Exception ex){Program.Log(ex);File.WriteAllText(Path.Combine(Program.Data,"test-result.txt"),ex.ToString());return 1;}
     }
