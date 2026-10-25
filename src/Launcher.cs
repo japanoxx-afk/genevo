@@ -11,7 +11,7 @@ using System.Windows.Forms;
 using System.Web.Script.Serialization;
 using System.Collections.Generic;
 
-[assembly: System.Reflection.AssemblyVersion("0.1.2.0")]
+[assembly: System.Reflection.AssemblyVersion("0.1.3.0")]
 namespace Genevo {
 static class Program {
     public static string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GenevoObserver");
@@ -110,7 +110,7 @@ class Launcher : Form {
     public Launcher(bool preview) {
         Text="GENEVO / OBSERVER"; ClientSize=new Size(820,620); MinimumSize=new Size(836,659); BackColor=Color.FromArgb(13,22,30); ForeColor=Color.White; Font=new Font("Malgun Gothic",10); StartPosition=FormStartPosition.CenterScreen;
         Label title=new Label {Text="GENEVO",Font=new Font("Segoe UI",30,FontStyle.Bold),AutoSize=true,Location=new Point(30,20)}; Controls.Add(title);
-        Controls.Add(new Label {Text="REPLAY OBSERVER  /  v0.1.2",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
+        Controls.Add(new Label {Text="REPLAY OBSERVER  /  v0.1.3",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
         game=PathRow("RED ALERT 3",settings.GamePath,125,false); mod=PathRow("GENEVO MOD",settings.ModPath,202,false); replay=PathRow("REPLAY",settings.Replay,279,true);
         Button play=Button("GenEvo 공식 런처 실행",30,370,235); play.Click+=(s,e)=>Safe(()=> {Save(); string exe=Path.Combine(settings.ModPath,"GenEvoLauncher.exe"); if(!File.Exists(exe))throw new FileNotFoundException("GenEvoLauncher.exe 경로를 확인하세요."); Process.Start(new ProcessStartInfo(exe){WorkingDirectory=settings.ModPath,UseShellExecute=true});});
         Button open=Button("리플레이 폴더",280,370,180); open.Click+=(s,e)=>Safe(()=> {string p=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),@"Red Alert 3\Replays"); Directory.CreateDirectory(p); Process.Start("explorer.exe",p);});
@@ -227,7 +227,7 @@ static class Tests {
             using(var fixture=new Form {Text="Genevo test game",ClientSize=new Size(900,600),StartPosition=FormStartPosition.Manual,Location=new Point(10,10)})using(var helper=new Form {ClientSize=new Size(100,25),ShowInTaskbar=false}) {
                 fixture.Show();helper.Show();Application.DoEvents();var ids=new HashSet<uint>{(uint)Process.GetCurrentProcess().Id};if(Native.FindGameWindow(ids)!=fixture.Handle)throw new Exception("Small helper window selected instead of game");
                 fixture.WindowState=FormWindowState.Minimized;Application.DoEvents();Native.ShowWindowAsync(fixture.Handle,9);for(int wait=0;wait<20&&Native.IsIconic(fixture.Handle);wait++){Application.DoEvents();System.Threading.Thread.Sleep(25);}if(Native.IsIconic(fixture.Handle)||Native.Bounds(fixture.Handle).Width<640)throw new Exception("Minimized window restore failed");
-                IntPtr previousFocus=Native.GetForegroundWindow();using(var hud=new Overlay(new Settings(),new ReplayInfo(),false,()=>fixture.Handle,()=>fixture.Handle)){hud.RefreshState();Application.DoEvents();if(!hud.Visible||hud.Bounds!=Native.Bounds(fixture.Handle))throw new Exception("HUD did not appear over active game window");if(Native.GetForegroundWindow()!=previousFocus)throw new Exception("HUD stole foreground focus");fixture.WindowState=FormWindowState.Minimized;Application.DoEvents();hud.RefreshState();if(hud.Visible)throw new Exception("HUD not hidden for minimized game");hud.Close();}
+                IntPtr previousFocus=Native.GetForegroundWindow();using(var hud=new Overlay(new Settings(),new ReplayInfo(),false,()=>fixture.Handle,()=>fixture.Handle)){hud.RefreshState();Application.DoEvents();if(!hud.Visible||hud.Bounds!=Native.Bounds(fixture.Handle))throw new Exception("HUD did not appear over active game window");if(Native.GetForegroundWindow()==hud.Handle)throw new Exception("HUD stole foreground focus");fixture.WindowState=FormWindowState.Minimized;Application.DoEvents();hud.RefreshState();if(hud.Visible)throw new Exception("HUD not hidden for minimized game");hud.Close();}
                 helper.Close();fixture.Close();
             }
             string temp=Path.GetTempFileName();

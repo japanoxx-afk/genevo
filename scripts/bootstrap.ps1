@@ -22,7 +22,9 @@ try {
     }
     $status = '업데이트 확인 완료'
     try {
-        $release = Invoke-RestMethod 'https://api.github.com/repos/japanoxx-afk/genevo/releases/latest' -Headers @{'User-Agent'='GenevoObserver'} -TimeoutSec 15
+        $releases = Invoke-RestMethod 'https://api.github.com/repos/japanoxx-afk/genevo/releases?per_page=100' -Headers @{'User-Agent'='GenevoObserver'} -TimeoutSec 15
+        $release = $releases | Where-Object { !$_.draft -and !$_.prerelease -and $_.tag_name -match '^v?\d+\.\d+\.\d+$' } | Sort-Object { [version]($_.tag_name -replace '^v','') } -Descending | Select-Object -First 1
+        if (!$release) { throw 'No stable release found' }
         $remote = [version]($release.tag_name -replace '^v','')
         if ($remote -gt $localVersion) {
             $zipAsset = @($release.assets | Where-Object name -eq 'genevo-win-x64.zip')

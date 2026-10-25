@@ -30,4 +30,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME artifacts/genevo-win-x64.zip artifacts/genevo-win-x64.zip.sha256 --title "Genevo Observer $env:GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+          gh release create $env:GITHUB_REF_NAME artifacts/genevo-win-x64.zip artifacts/genevo-win-x64.zip.sha256 --title "Genevo Observer $env:GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Release publishing failed' }
+          $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+          $highest = $releases | Where-Object { !$_.draft -and !$_.prerelease -and $_.tag_name -match '^v\d+\.\d+\.\d+$' } | Sort-Object { [version]($_.tag_name -replace '^v','') } -Descending | Select-Object -First 1
+          gh release edit $highest.tag_name --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Latest release update failed' }
