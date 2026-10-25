@@ -33,6 +33,17 @@ sealed class LiveGame : IDisposable {
         }
     }
     string Faction(uint player){uint template=U32(player+0x10);byte[] b=Read(template,256);for(int off=0;off<b.Length;off+=4){uint p=BitConverter.ToUInt32(b,off);if(p<0x10000||p>=0x80000000)continue;try{string s=Text(p,false);if(s.StartsWith("INI:Faction",StringComparison.Ordinal)){return ModMetadata.Faction(s.Substring(4));}}catch(IOException){}}return null;}
+    float F32(long p){return BitConverter.ToSingle(Read(p,4),0);}
+    static bool Finite(float value){return !Single.IsNaN(value)&&!Single.IsInfinity(value);}
+    public static string Clock(uint frames){uint seconds=frames/15;return seconds>=3600?(seconds/3600).ToString("00")+":"+((seconds/60)%60).ToString("00")+":"+(seconds%60).ToString("00"):(seconds/60).ToString("00")+":"+(seconds%60).ToString("00");}
+    string GameTime(){try{uint logic=U32(imageBase+0x8dde84);string path=Text(U32(logic+0x98),false);if(!path.EndsWith(".map",StringComparison.OrdinalIgnoreCase))return null;uint frame=U32(logic+0x50);if(frame>15*60*60*24)return null;return Clock(frame);}catch{return null;}}
+    UnitSelection Selection(Dictionary<uint,string> owners,Dictionary<string,TelemetryPlayer> players){try{uint manager=U32(imageBase+0x8e08dc);int count=(int)U32(manager+0x5c);if(count<=0||count>2048)return null;uint node=U32(manager+0x50),drawable=U32(node+8),thing=U32(drawable+0x138);if(U32(thing)!=imageBase+0x854bb0)return null;uint owner=U32(thing+0x418);string ownerName;if(!owners.TryGetValue(owner,out ownerName))return null;
+        string name=Text(U32(U32(thing+4)+0x1c),false);if(name.Length<2||name.Length>100||!System.Text.RegularExpressions.Regex.IsMatch(name,@"^[A-Za-z0-9_]+$"))return null;
+        uint hp=U32(thing+0x33c);float current=F32(hp+4),max=F32(hp+12);if(!Finite(current)||!Finite(max)||current<0||max<=0||max>100000000)return null;
+        return new UnitSelection {Count=count,Name=PrettyUnit(name),Type=name,Owner=ownerName,Faction=players[ownerName].Faction,Description=UnitDescription(name),Health=current,MaxHealth=max};}catch{return null;}}
+    static string PrettyUnit(string name){string[] suffixes={"WarFactory","CommandCenter","Barracks","PowerPlant","SupplyCenter","SupplyStash"};string[] labels={"군수공장","사령부","병영","발전소","보급센터","보급창고"};for(int n=0;n<suffixes.Length;n++)if(name.EndsWith(suffixes[n],StringComparison.Ordinal))return (name.StartsWith("Lazr_",StringComparison.Ordinal)?"레이저 ":"")+labels[n];return System.Text.RegularExpressions.Regex.Replace(name.Replace('_',' '),"([a-z])([A-Z])","$1 $2");}
+    static string UnitDescription(string name){if(name.EndsWith("WarFactory",StringComparison.Ordinal))return "전차와 차량을 생산하는 시설";if(name.EndsWith("Barracks",StringComparison.Ordinal))return "보병을 생산하는 시설";if(name.EndsWith("PowerPlant",StringComparison.Ordinal))return "기지에 전력을 공급하는 시설";if(name.EndsWith("SupplyCenter",StringComparison.Ordinal)||name.EndsWith("SupplyStash",StringComparison.Ordinal))return "수집한 자원을 보관하는 보급 시설";return null;}
+    void Dots(uint player,Color color,List<RadarDot> dots){try{uint start=U32(player+0x444),end=U32(player+0x448);long count=((long)end-start)/4;if(count<0||count>2048)return;for(long n=0;n<count&&dots.Count<4096;n++){try{uint thing=U32(start+n*4);if(U32(thing)!=imageBase+0x854bb0||U32(thing+0x418)!=player)continue;float x=F32(thing+0x38),y=F32(thing+0x3c);if(!Finite(x)||!Finite(y)||Math.Abs(x)>100000||Math.Abs(y)>100000)continue;dots.Add(new RadarDot {X=x,Y=y,Color=color.ToArgb()});}catch{}}}catch{}}
     public Telemetry Poll(IntPtr window,ReplayInfo info,string replay){
         if(DateTime.UtcNow<nextSample)return cached;nextSample=DateTime.UtcNow.AddMilliseconds(200);cached=null;
         if(window==IntPtr.Zero||info.Players.Count==0)return null;
@@ -40,17 +51,18 @@ sealed class LiveGame : IDisposable {
             if(!Attach(window))return null;uint context=U32(contextAddress),local=U32(context+0x28);
             if(!Text(U32(local+0x18),false).StartsWith("ReplayObserver",StringComparison.Ordinal)){Status="리플레이 관전자 모드에서만 자원 수집";return null;}
             int count=(int)U32(context+0x2c);if(count<3||count>18)throw new InvalidDataException("Invalid player count");
-            var found=new Dictionary<string,TelemetryPlayer>(StringComparer.Ordinal);var colors=new Dictionary<string,Color>(StringComparer.Ordinal);
+            var found=new Dictionary<string,TelemetryPlayer>(StringComparer.Ordinal);var colors=new Dictionary<string,Color>(StringComparer.Ordinal);var owners=new Dictionary<uint,string>();var dots=new List<RadarDot>();
             for(int index=0;index<count;index++){
                 uint player=U32(context+0x30+index*4);if(U32(player+0x20)!=index)throw new InvalidDataException("Player index mismatch");string name=Text(U32(player+0x14),true);
                 var expected=info.Players.FirstOrDefault(p=>p.Name==name);if(expected==null)continue;if(found.ContainsKey(name))throw new InvalidDataException("Duplicate player name");
                 uint begin=U32(player+0xe4),end=U32(player+0xe8);if(end-begin!=4)throw new InvalidDataException("Unsupported resource count");uint money=U32(begin);byte[] cash=Read(money,24);long credits=(long)BitConverter.ToInt32(cash,4)+BitConverter.ToInt32(cash,20);if(BitConverter.ToUInt32(cash,12)!=index||credits<0||credits>100000000)throw new InvalidDataException("Resource validation failed");
                 uint power=U32(player+0x74);int total=(int)U32(power+4),used=(int)U32(power+8);if(total<0||used<0||total>1000000||used>1000000)throw new InvalidDataException("Power validation failed");
                 found[name]=new TelemetryPlayer {Slot=expected.Slot,Name=name,Faction=Faction(player),Credits=credits,PowerUsed=used,PowerTotal=total};colors[name]=Color.FromArgb(unchecked((int)U32(player+0x80)));
+                owners[player]=name;Dots(player,colors[name],dots);
             }
             if(found.Count!=info.Players.Count){Status="재생 중인 플레이어와 선택한 리플레이가 다릅니다";return null;}
             foreach(var p in info.Players){p.Color=colors[p.Name];if(found[p.Name].Faction!=null)p.Faction=found[p.Name].Faction;}
-            Status="LIVE · 게임 자금 직접 수집";cached=new Telemetry {Replay=Path.GetFileName(replay),CapturedUtc=DateTime.UtcNow.ToString("o"),Players=found.Values.OrderBy(p=>p.Slot).ToList()};return cached;
+            Status="LIVE · 게임 자금 직접 수집";cached=new Telemetry {Replay=Path.GetFileName(replay),CapturedUtc=DateTime.UtcNow.ToString("o"),GameTime=GameTime(),Selection=Selection(owners,found),Radar=dots,Players=found.Values.OrderBy(p=>p.Slot).ToList()};return cached;
         }catch(Exception ex){Status="자원 연결 중단 · "+ex.Message;return null;}
     }
 }
