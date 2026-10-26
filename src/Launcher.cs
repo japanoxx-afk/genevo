@@ -11,7 +11,7 @@ using System.Windows.Forms;
 using System.Web.Script.Serialization;
 using System.Collections.Generic;
 
-[assembly: System.Reflection.AssemblyVersion("0.4.1.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.2.0")]
 namespace Genevo {
 static class Program {
     public static string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GenevoObserver");
@@ -116,7 +116,7 @@ class Launcher : Form {
     public Launcher(bool preview) {
         Text="GENEVO / OBSERVER";ClientSize=new Size(1020,860);MinimumSize=new Size(1036,899);BackColor=Color.FromArgb(13,22,30);ForeColor=Color.White;Font=new Font("Malgun Gothic",10);StartPosition=FormStartPosition.CenterScreen;
         Controls.Add(new Label {Text="GENEVO",Font=new Font("Segoe UI",30,FontStyle.Bold),AutoSize=true,Location=new Point(30,20)});
-        Controls.Add(new Label {Text="REPLAY OBSERVER / v0.4.1",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
+        Controls.Add(new Label {Text="REPLAY OBSERVER / v0.4.2",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
         game=PathRow("RED ALERT 3",settings.GamePath,125);mod=PathRow("GENEVO MOD",settings.ModPath,202);
         libraryTitle=new Label {Text="리플레이 · 더블클릭하면 창 모드로 실행",Location=new Point(30,280),Size=new Size(560,25),ForeColor=Color.Turquoise};Controls.Add(libraryTitle);
         var refresh=Button("새로고침",740,270,110);refresh.Click+=(o,e)=>RefreshReplays();var folder=Button("폴더 변경",865,270,125);folder.Click+=(o,e)=>{using(var dialog=new FolderBrowserDialog {SelectedPath=settings.ReplayFolder})if(dialog.ShowDialog()==DialogResult.OK){settings.ReplayFolder=dialog.SelectedPath;settings.Save();WatchFiles();RefreshReplays();}};
@@ -179,27 +179,28 @@ class Overlay : Form {
         int w=size.Width,h=size.Height;g.SmoothingMode=SmoothingMode.AntiAlias;
         if(preview){g.Clear(Color.FromArgb(25,35,41));using(var f=new Font("Malgun Gothic",15))g.DrawString("관전 HUD 미리보기  /  ESC 닫기",f,Brushes.Gray,30,30);}
         var feed=preview?null:liveFeed??Feed.Read(settings.Replay);bool connected=feed!=null;
-        int reserve=feed!=null&&feed.Selection!=null?Math.Min(330,w/3)+12:0;
-        int x=12, width=Math.Max(460,Math.Min(w-x-12-reserve,860));int rows=Math.Max(2,info.Players.Count);int y=h-12-36-rows*36;
+        int width=Math.Max(460,Math.Min(w-24,1000)),x=(w-width)/2;int rows=Math.Max(2,info.Players.Count);int y=h-12-36-rows*36;
         using(var bg=new SolidBrush(Color.FromArgb(11,26,36)))g.FillRectangle(bg,x,y,width,36+rows*36);
         using(var small=new Font("Malgun Gothic",9))using(var normal=new Font("Malgun Gothic",10,FontStyle.Bold)) {
             string map=info.Map.Replace("283data/maps/","");int mapWidth=Math.Max(70,width-340);Draw(g,map,small,Brushes.LightSteelBlue,new Rectangle(x+10,y+4,mapWidth,27));Draw(g,feed!=null&&!String.IsNullOrEmpty(feed.GameTime)?feed.GameTime:"--:--",normal,Brushes.White,new Rectangle(x+mapWidth+16,y+3,90,27));
             Draw(g,preview?"PREVIEW":connected?"LIVE · 자금 수집 중":live.Status,small,connected?Brushes.Turquoise:Brushes.Goldenrod,new Rectangle(x+width-240,y+4,230,27));
+            int powerWidth=Math.Max(180,(int)Math.Ceiling(g.MeasureString("전력 1000000/1000000",small).Width)+16);
+            int powerX=x+width-12-powerWidth,incomeX=powerX-122,cashX=incomeX-132;
             for(int n=0;n<rows;n++) {int ry=y+36+n*36;Player player=n<info.Players.Count?info.Players[n]:null;
                 using(var b=new SolidBrush(n%2==0?Color.FromArgb(23,42,55):Color.FromArgb(18,35,47)))g.FillRectangle(b,x,ry,width,35);
                 Color c=player==null?Color.DimGray:player.Color;using(var b=new SolidBrush(c))g.FillRectangle(b,x,ry,5,35);
                 TelemetryPlayer t=connected&&feed.Players!=null&&player!=null?feed.Players.FirstOrDefault(z=>z.Slot==player.Slot):null;
                 string faction=t!=null&&!String.IsNullOrWhiteSpace(t.Faction)?t.Faction:player==null?"진영 대기":player.Faction;
-                FactionIcons.Draw(g,new Rectangle(x+13,ry+5,48,24),faction,settings.ModPath);Draw(g,faction,small,Brushes.Silver,new Rectangle(x+68,ry+7,86,25));
-                Draw(g,player==null?"플레이어 대기":player.Name,normal,Brushes.White,new Rectangle(x+160,ry+6,Math.Max(75,width-482),25));
-                Draw(g,"$ "+(t!=null&&t.Credits.HasValue?t.Credits.Value.ToString("N0"):"—"),normal,Brushes.White,new Rectangle(x+width-300,ry+6,105,25));
-                Draw(g,t!=null&&t.Income.HasValue?"수입 "+t.Income.Value.ToString("N0"):"수입 미지원",small,Brushes.LightSteelBlue,new Rectangle(x+width-190,ry+7,100,25));
-                Draw(g,"전력 "+(t!=null&&t.PowerUsed.HasValue&&t.PowerTotal.HasValue?t.PowerUsed+"/"+t.PowerTotal:"—"),small,Brushes.LightSteelBlue,new Rectangle(x+width-90,ry+7,88,25));
+                FactionIcons.Draw(g,new Rectangle(x+13,ry+5,48,24),faction,settings.ModPath);Draw(g,faction,small,Brushes.Silver,new Rectangle(x+68,ry+7,106,25));
+                using(var teamBrush=new SolidBrush(player==null?Color.Gray:player.Color))Draw(g,player==null?"플레이어 대기":player.Name,normal,teamBrush,new Rectangle(x+184,ry+6,Math.Max(40,cashX-x-196),25));
+                Draw(g,"$ "+(t!=null&&t.Credits.HasValue?t.Credits.Value.ToString("N0"):"—"),normal,Brushes.White,new Rectangle(cashX,ry+6,120,25));
+                Draw(g,t!=null&&t.Income.HasValue?"수입 "+t.Income.Value.ToString("N0"):"수입 미지원",small,Brushes.LightSteelBlue,new Rectangle(incomeX,ry+7,110,25));
+                Draw(g,"전력 "+(t!=null&&t.PowerUsed.HasValue&&t.PowerTotal.HasValue?t.PowerUsed+"/"+t.PowerTotal:"—"),small,Brushes.LightSteelBlue,new Rectangle(powerX,ry+7,powerWidth,25));
             }
         }
-        if(feed!=null&&feed.Selection!=null)DrawSelection(g,size,feed.Selection);
+        if(feed!=null&&feed.Selection!=null)DrawSelection(g,size,feed.Selection,new Rectangle(x,y,width,36+rows*36));
     }
-    static void DrawSelection(Graphics g,Size size,UnitSelection unit){int width=Math.Min(330,size.Width/3),height=170;var panel=new Rectangle(size.Width-width-12,size.Height-height-12,width,height);using(var bg=new SolidBrush(Color.FromArgb(12,29,39)))g.FillRectangle(bg,panel);g.DrawRectangle(Pens.Teal,panel);using(var title=new Font("Malgun Gothic",11,FontStyle.Bold))using(var small=new Font("Malgun Gothic",9)){Draw(g,unit.Name+(unit.Count>1?" 외 "+(unit.Count-1)+"개":""),title,Brushes.White,new Rectangle(panel.X+12,panel.Y+12,width-24,29));Draw(g,"소유자  "+unit.Owner+" · "+unit.Faction,small,Brushes.LightSteelBlue,new Rectangle(panel.X+12,panel.Y+51,width-24,24));Draw(g,"체력  "+unit.Health.ToString("N0")+" / "+unit.MaxHealth.ToString("N0"),small,Brushes.White,new Rectangle(panel.X+12,panel.Y+80,width-24,24));var bar=new Rectangle(panel.X+12,panel.Y+115,width-24,12);using(var bg=new SolidBrush(Color.FromArgb(44,60,66)))g.FillRectangle(bg,bar);using(var hp=new SolidBrush(Color.FromArgb(83,204,125)))g.FillRectangle(hp,bar.X,bar.Y,(float)(bar.Width*Math.Min(1,Math.Max(0,unit.Health/unit.MaxHealth))),bar.Height);Draw(g,unit.Description??("선택 "+unit.Count+"개"),small,Brushes.Silver,new Rectangle(panel.X+12,panel.Y+137,width-24,24));}}
+    static void DrawSelection(Graphics g,Size size,UnitSelection unit,Rectangle hud){int width=Math.Min(330,size.Width/3),height=170;var panel=new Rectangle(size.Width-width-12,size.Height-height-12,width,height);if(panel.IntersectsWith(hud))panel.Y=Math.Max(12,hud.Top-height-10);using(var bg=new SolidBrush(Color.FromArgb(12,29,39)))g.FillRectangle(bg,panel);g.DrawRectangle(Pens.Teal,panel);using(var title=new Font("Malgun Gothic",11,FontStyle.Bold))using(var small=new Font("Malgun Gothic",9)){Draw(g,unit.Name+(unit.Count>1?" 외 "+(unit.Count-1)+"개":""),title,Brushes.White,new Rectangle(panel.X+12,panel.Y+12,width-24,29));Draw(g,"소유자  "+unit.Owner+" · "+unit.Faction,small,Brushes.LightSteelBlue,new Rectangle(panel.X+12,panel.Y+51,width-24,24));Draw(g,"체력  "+unit.Health.ToString("N0")+" / "+unit.MaxHealth.ToString("N0"),small,Brushes.White,new Rectangle(panel.X+12,panel.Y+80,width-24,24));var bar=new Rectangle(panel.X+12,panel.Y+115,width-24,12);using(var bg=new SolidBrush(Color.FromArgb(44,60,66)))g.FillRectangle(bg,bar);using(var hp=new SolidBrush(Color.FromArgb(83,204,125)))g.FillRectangle(hp,bar.X,bar.Y,(float)(bar.Width*Math.Min(1,Math.Max(0,unit.Health/unit.MaxHealth))),bar.Height);Draw(g,unit.Description??("선택 "+unit.Count+"개"),small,Brushes.Silver,new Rectangle(panel.X+12,panel.Y+137,width-24,24));}}
     static void Draw(Graphics g,string text,Font font,Brush brush,Rectangle r) {using(var format=new StringFormat {Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap})g.DrawString(text??"",font,brush,r,format);}
 }
 static class Tests {
