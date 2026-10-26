@@ -11,7 +11,7 @@ using System.Windows.Forms;
 using System.Web.Script.Serialization;
 using System.Collections.Generic;
 
-[assembly: System.Reflection.AssemblyVersion("0.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.1.0")]
 namespace Genevo {
 static class Program {
     public static string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GenevoObserver");
@@ -116,7 +116,7 @@ class Launcher : Form {
     public Launcher(bool preview) {
         Text="GENEVO / OBSERVER";ClientSize=new Size(1020,860);MinimumSize=new Size(1036,899);BackColor=Color.FromArgb(13,22,30);ForeColor=Color.White;Font=new Font("Malgun Gothic",10);StartPosition=FormStartPosition.CenterScreen;
         Controls.Add(new Label {Text="GENEVO",Font=new Font("Segoe UI",30,FontStyle.Bold),AutoSize=true,Location=new Point(30,20)});
-        Controls.Add(new Label {Text="REPLAY OBSERVER / v0.4.0",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
+        Controls.Add(new Label {Text="REPLAY OBSERVER / v0.4.1",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
         game=PathRow("RED ALERT 3",settings.GamePath,125);mod=PathRow("GENEVO MOD",settings.ModPath,202);
         libraryTitle=new Label {Text="리플레이 · 더블클릭하면 창 모드로 실행",Location=new Point(30,280),Size=new Size(560,25),ForeColor=Color.Turquoise};Controls.Add(libraryTitle);
         var refresh=Button("새로고침",740,270,110);refresh.Click+=(o,e)=>RefreshReplays();var folder=Button("폴더 변경",865,270,125);folder.Click+=(o,e)=>{using(var dialog=new FolderBrowserDialog {SelectedPath=settings.ReplayFolder})if(dialog.ShowDialog()==DialogResult.OK){settings.ReplayFolder=dialog.SelectedPath;settings.Save();WatchFiles();RefreshReplays();}};
@@ -190,7 +190,7 @@ class Overlay : Form {
                 Color c=player==null?Color.DimGray:player.Color;using(var b=new SolidBrush(c))g.FillRectangle(b,x,ry,5,35);
                 TelemetryPlayer t=connected&&feed.Players!=null&&player!=null?feed.Players.FirstOrDefault(z=>z.Slot==player.Slot):null;
                 string faction=t!=null&&!String.IsNullOrWhiteSpace(t.Faction)?t.Faction:player==null?"진영 대기":player.Faction;
-                FactionIcons.Draw(g,new Rectangle(x+13,ry+4,27,27),faction);Draw(g,faction,small,Brushes.Silver,new Rectangle(x+48,ry+7,106,25));
+                FactionIcons.Draw(g,new Rectangle(x+13,ry+5,48,24),faction,settings.ModPath);Draw(g,faction,small,Brushes.Silver,new Rectangle(x+68,ry+7,86,25));
                 Draw(g,player==null?"플레이어 대기":player.Name,normal,Brushes.White,new Rectangle(x+160,ry+6,Math.Max(75,width-482),25));
                 Draw(g,"$ "+(t!=null&&t.Credits.HasValue?t.Credits.Value.ToString("N0"):"—"),normal,Brushes.White,new Rectangle(x+width-300,ry+6,105,25));
                 Draw(g,t!=null&&t.Income.HasValue?"수입 "+t.Income.Value.ToString("N0"):"수입 미지원",small,Brushes.LightSteelBlue,new Rectangle(x+width-190,ry+7,100,25));
@@ -233,6 +233,18 @@ static class Tests {
             var info=File.Exists(real)?ReplayInfo.Read(real):new ReplayInfo();if(File.Exists(real)&&info.Players.Count!=2)throw new Exception("Real replay parsing failed");
             if(File.Exists(real)&&Directory.Exists(Settings.Load().ModPath)&&info.Map.EndsWith("genevo033_aymcam_skrm_01")){string display=ModMetadata.Map(Settings.Load().ModPath,info.Map);if(display!="[GenEvo-Dev] Cold Drops")throw new Exception("Real BIG/map metadata decode failed");info.Map=display;}
             if(ModMetadata.Faction("FactionGLAToxinGeneral")!="GLA 독소"||ModMetadata.Faction("FactionAmerica")!="미국")throw new Exception("Faction metadata decode failed");
+            string[] factions={"미국","미국 레이저","미국 슈퍼무기","미국 공군","중국","중국 핵","중국 탱크","중국 보병","GLA","GLA 독소","GLA 폭파","GLA 스텔스"};
+            if(FactionIcons.AssetName("FactionAmericaAirForceGeneral")!="FactionAmericaAirforce"||FactionIcons.AssetName("FactionGLAToxinGeneral")!="FactionGLAToxin"||FactionIcons.AssetName("중국 핵")!="FactionChinaNuke")throw new Exception("Subfaction icon mapping regression");
+            byte[] dds=new byte[144];Action<int,uint> put=(offset,value)=>Array.Copy(BitConverter.GetBytes(value),0,dds,offset,4);put(0,0x20534444);put(4,124);put(12,4);put(16,4);put(84,0x35545844);dds[128]=255;dds[129]=0;dds[136]=0;dds[137]=248;dds[138]=224;dds[139]=7;dds[140]=0xe4;
+            using(var decoded=FactionIcons.DecodeDxt5(dds,0)){if(decoded.GetPixel(0,0).ToArgb()!=Color.Red.ToArgb()||decoded.GetPixel(1,0).ToArgb()!=Color.Lime.ToArgb()||decoded.GetPixel(2,0).R!=170||decoded.GetPixel(2,0).G!=85)throw new Exception("BC3 color palette decode regression");}
+            dds[128]=0;dds[129]=128;dds[130]=7;
+            using(var decoded=FactionIcons.DecodeDxt5(dds,0)){if(decoded.GetPixel(0,0).A!=255||decoded.GetPixel(1,0).A!=0)throw new Exception("BC3 transparency decode regression");}
+            string modPath=Settings.Load().ModPath;
+            if(Directory.Exists(modPath)){
+                if(!FactionIcons.Available(modPath)||factions.Any(f=>!FactionIcons.HasIcon(modPath,f)))throw new Exception("Installed GenEvo faction artwork missing");
+                using(var sheet=new Bitmap(600,40*factions.Length))using(var g=Graphics.FromImage(sheet))using(var font=new Font("Malgun Gothic",11)){
+                    g.Clear(Color.FromArgb(18,35,47));for(int n=0;n<factions.Length;n++){FactionIcons.Draw(g,new Rectangle(12,n*40+4,64,32),factions[n],modPath);g.DrawString(factions[n]+" · "+FactionIcons.AssetName(factions[n]),font,Brushes.White,90,n*40+8);}sheet.Save(Path.Combine(Program.Data,"faction-icons-preview.png"));}
+            }
             using(var form=new Overlay(new Settings(),info,true))using(var bitmap=new Bitmap(1330,736))using(var graphics=Graphics.FromImage(bitmap)){form.Render(graphics,bitmap.Size);bitmap.Save(Path.Combine(Program.Data,"hud-preview.png"));}
             using(var launcher=new Launcher(false)){launcher.Show();Application.DoEvents();using(var bitmap=new Bitmap(launcher.Width,launcher.Height)){launcher.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));bitmap.Save(Path.Combine(Program.Data,"launcher-preview.png"));}launcher.Close();}
             File.WriteAllText(Path.Combine(Program.Data,"test-result.txt"),"PASS: game window selection, minimized window restore, HUD visibility/focus/bounds, replay metadata, malformed replay, real replay, replay library, windowed launch arguments, faction icons, HUD render");return 0;
