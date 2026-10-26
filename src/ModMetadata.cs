@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text;
 using System.Linq;
@@ -6,10 +6,7 @@ using System.Collections.Generic;
 using System.Text.RegularExpressions;
 namespace Genevo {
 static class ModMetadata {
-    public static byte[] MapData(byte[] data){return Unpack(data);}
-    public static string AssetPath(string raw){return Regex.Replace((raw??"").Replace('\\','/'),"^[0-9a-fA-F]{3}(?=data/)","").TrimEnd('/');}
-    public static byte[] Entry(string root,string relative){foreach(string path in Directory.GetFiles(root,"*.big"))using(var r=new BinaryReader(File.OpenRead(path))){string magic=Encoding.ASCII.GetString(r.ReadBytes(4));if(magic!="BIG4"&&magic!="BIGF")continue;r.ReadUInt32();uint count=BE(r);BE(r);if(count>100000)continue;for(uint n=0;n<count;n++){uint offset=BE(r),size=BE(r);var name=new List<byte>();byte c;while((c=r.ReadByte())!=0){if(name.Count>2048)throw new InvalidDataException();name.Add(c);}if(!String.Equals(Encoding.ASCII.GetString(name.ToArray()).Replace('\\','/'),relative,StringComparison.OrdinalIgnoreCase))continue;if(size>64*1024*1024||(long)offset+size>r.BaseStream.Length)throw new InvalidDataException();r.BaseStream.Position=offset;return r.ReadBytes((int)size);}}return null;}
-    static Dictionary<string,string> cache=new Dictionary<string,string>();
+    static System.Collections.Concurrent.ConcurrentDictionary<string,string> cache=new System.Collections.Concurrent.ConcurrentDictionary<string,string>();
     public static string Faction(string name){switch(name){case "FactionAmerica":return "미국";case "FactionGLAToxinGeneral":case "FactionGLAToxin":return "GLA 독소";case "FactionGLA":return "GLA";case "FactionChina":return "중국";default:return Regex.Replace(name.Replace("Faction",""),"([a-z])([A-Z])","$1 $2");}}
     static uint BE(BinaryReader r){var b=r.ReadBytes(4);if(b.Length!=4)throw new EndOfStreamException();return (uint)(b[0]<<24|b[1]<<16|b[2]<<8|b[3]);}
     static byte[] Unpack(byte[] b){if(b.Length<13||Encoding.ASCII.GetString(b,0,4)!="EAR\0")return b;if(b[8]!=0x10||b[9]!=0xfb)throw new InvalidDataException("Unsupported map compression");int size=b[10]<<16|b[11]<<8|b[12];if(size<4||size>64*1024*1024)throw new InvalidDataException();var output=new byte[size];int p=13,q=0;

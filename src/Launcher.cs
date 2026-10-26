@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -11,7 +11,7 @@ using System.Windows.Forms;
 using System.Web.Script.Serialization;
 using System.Collections.Generic;
 
-[assembly: System.Reflection.AssemblyVersion("0.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("0.4.0.0")]
 namespace Genevo {
 static class Program {
     public static string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GenevoObserver");
@@ -34,24 +34,23 @@ static class Program {
 public class Settings {
     public string GamePath = @"C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3";
     public string ModPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @"Downloads\GenEvo_Beta_033.1\GenEvo_Beta_033\GenEvo");
-    public string Replay = "";
-    public float RadarX, RadarY, RadarW, RadarH;
+    public string Replay = ""; public string ReplayFolder="";
     public bool LockMouse=true;
     public static Settings Load() { try { return Program.Json.Deserialize<Settings>(File.ReadAllText(Path.Combine(Program.Data,"settings.json"))) ?? new Settings(); } catch { return new Settings(); } }
     public void Save() { File.WriteAllText(Path.Combine(Program.Data,"settings.json"),Program.Json.Serialize(this)); }
 }
 public class Player { public string Name; public string Faction; public int Slot; public Color Color; }
 public class ReplayInfo {
-    public string Map = "리플레이를 선택하세요";public string MapAsset; public List<Player> Players = new List<Player>();
+    public string Map = "리플레이를 선택하세요";public List<Player> Players = new List<Player>();
     public static ReplayInfo Read(string path) {
         byte[] bytes = new byte[65536]; int count;
-        using (var stream = File.OpenRead(path)) count = stream.Read(bytes,0,bytes.Length);
+        using (var stream = new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)) count = stream.Read(bytes,0,bytes.Length);
         string text = Encoding.UTF8.GetString(bytes,0,count);
         if (!text.StartsWith("RA3 REPLAY HEADER")) throw new InvalidDataException("RA3 리플레이 형식이 아닙니다.");
         var map = Regex.Match(text,@"M=([^;]+);MC=");
         var players = Regex.Match(text,@";S=([^;]+);");
         if (!map.Success || !players.Success) throw new InvalidDataException("리플레이 헤더를 읽을 수 없습니다.");
-        ReplayInfo info = new ReplayInfo(); info.Map = map.Groups[1].Value;info.MapAsset=info.Map;
+        ReplayInfo info = new ReplayInfo(); info.Map = map.Groups[1].Value;
         int index = 0; Color[] colors = {Color.FromArgb(176,104,250),Color.FromArgb(235,192,66),Color.FromArgb(71,196,220),Color.FromArgb(235,96,86),Color.LightGreen,Color.Orange};
         foreach (string entry in players.Groups[1].Value.Split(':')) {
             string[] p = entry.Split(','); int faction;
@@ -65,8 +64,7 @@ public class ReplayInfo {
 }
 public class TelemetryPlayer { public int Slot; public string Name; public string Faction; public long? Credits; public long? Income; public int? PowerUsed; public int? PowerTotal; }
 public class UnitSelection {public int Count;public string Name,Type,Owner,Faction,Description;public float Health,MaxHealth;}
-public class RadarDot {public float X,Y;public int Color;}
-public class Telemetry { public string Replay; public string CapturedUtc; public string GameTime; public List<TelemetryPlayer> Players;public UnitSelection Selection;public List<RadarDot> Radar; }
+public class Telemetry { public string Replay; public string CapturedUtc; public string GameTime; public List<TelemetryPlayer> Players;public UnitSelection Selection; }
 static class Feed {
     public static Telemetry Read(string replay) {
         string path=Path.Combine(Program.Data,"telemetry.json");
@@ -79,6 +77,8 @@ static class Feed {
     }
 }
 static class Native {
+    static IntPtr cachedGame;static DateTime nextWindowScan;
+    [DllImport("user32.dll")]static extern bool IsWindow(IntPtr window);
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int L,T,R,B; }
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out Rect r);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref Point p);
@@ -97,8 +97,9 @@ static class Native {
     public static bool IsGameProcess(string name) {return Regex.IsMatch(name,@"^ra3(?:_\d+\.\d+\.game)?$",RegexOptions.IgnoreCase);}
     public static bool SameProcess(IntPtr a,IntPtr b) {uint x,y;return a!=IntPtr.Zero&&b!=IntPtr.Zero&&GetWindowThreadProcessId(a,out x)!=0&&GetWindowThreadProcessId(b,out y)!=0&&x==y;}
     public static IntPtr Game() {
+        if(DateTime.UtcNow<nextWindowScan&&(cachedGame==IntPtr.Zero||IsWindow(cachedGame)))return cachedGame;nextWindowScan=DateTime.UtcNow.AddMilliseconds(400);
         var ids=new HashSet<uint>();foreach(var p in Process.GetProcesses())using(p){try{if(IsGameProcess(p.ProcessName))ids.Add((uint)p.Id);}catch{}}
-        return FindGameWindow(ids);
+        cachedGame=FindGameWindow(ids);return cachedGame;
     }
     public static IntPtr FindGameWindow(HashSet<uint> ids) {
         IntPtr best=IntPtr.Zero;long score=long.MinValue;IntPtr front=GetForegroundWindow();
@@ -109,110 +110,77 @@ static class Native {
     public static Rectangle Bounds(IntPtr h) { Rect r; Point pt=Point.Empty; if (!GetClientRect(h,out r) || !ClientToScreen(h,ref pt)) return Rectangle.Empty; return new Rectangle(pt.X,pt.Y,r.R-r.L,r.B-r.T); }
 }
 class Launcher : Form {
-    Settings settings=Settings.Load(); TextBox game,mod,replay; Label status; Overlay overlay;
-    Timer watch=new Timer(); Timer calibration; Selector selector; bool hudEnabled=true,calibrating; string updateStatus;CursorFence fence=new CursorFence();EdgeScroll edge=new EdgeScroll();CheckBox lockMouse;
+    Settings settings=Settings.Load();TextBox game,mod,replay;Label status,libraryTitle;ListView library;Overlay overlay;
+    Timer watch=new Timer(),motion=new Timer(),reload=new Timer();FileSystemWatcher files;int generation;
+    bool hudEnabled=true;string updateStatus;CursorFence fence=new CursorFence();EdgeScroll edge=new EdgeScroll();CheckBox lockMouse;
     public Launcher(bool preview) {
-        Text="GENEVO / OBSERVER"; ClientSize=new Size(820,620); MinimumSize=new Size(836,659); BackColor=Color.FromArgb(13,22,30); ForeColor=Color.White; Font=new Font("Malgun Gothic",10); StartPosition=FormStartPosition.CenterScreen;
-        Label title=new Label {Text="GENEVO",Font=new Font("Segoe UI",30,FontStyle.Bold),AutoSize=true,Location=new Point(30,20)}; Controls.Add(title);
-        Controls.Add(new Label {Text="REPLAY OBSERVER  /  v0.3.0",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
-        game=PathRow("RED ALERT 3",settings.GamePath,125,false); mod=PathRow("GENEVO MOD",settings.ModPath,202,false); replay=PathRow("REPLAY",settings.Replay,279,true);
-        Button play=Button("GenEvo 공식 런처 실행",30,370,235); play.Click+=(s,e)=>Safe(()=> {Save(); string exe=Path.Combine(settings.ModPath,"GenEvoLauncher.exe"); if(!File.Exists(exe))throw new FileNotFoundException("GenEvoLauncher.exe 경로를 확인하세요."); Process.Start(new ProcessStartInfo(exe){WorkingDirectory=settings.ModPath,UseShellExecute=true});});
-        Button open=Button("리플레이 폴더",280,370,180); open.Click+=(s,e)=>Safe(()=> {string p=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),@"Red Alert 3\Replays"); Directory.CreateDirectory(p); Process.Start("explorer.exe",p);});
-        Button windowed=Button("창 모드로 리플레이 실행",475,370,310);windowed.Click+=(s,e)=>Safe(LaunchReplay);
-        Button start=Button("관전 HUD 켜기",30,424,180); start.Click+=(s,e)=>Safe(()=>ShowHud(false));
-        Button test=Button("HUD 미리보기",225,424,180); test.Click+=(s,e)=>Safe(()=>ShowHud(true));
-        Button radar=Button("미니맵 영역 지정",420,424,180); radar.Click+=(s,e)=>Safe(Calibrate);
-        Button stop=Button("HUD 끄기",615,424,170); stop.Click+=(s,e)=> {hudEnabled=false;if(overlay!=null)overlay.Close();};
-        lockMouse=new CheckBox {Text="마우스를 게임 창 안에 고정 (F6 전환 / Alt+Tab 해제)",Checked=settings.LockMouse,AutoSize=true,Location=new Point(30,466)};lockMouse.CheckedChanged+=(s,e)=>{settings.LockMouse=lockMouse.Checked;settings.Save();if(!lockMouse.Checked)fence.Dispose();};Controls.Add(lockMouse);
-        Controls.Add(new Label {Text="리플레이 파일을 선택하면 게임으로 돌아갈 때 HUD가 자동으로 켜집니다.\n가장자리: 화면 이동 / END: 게임 HUD 숨김 / F8: 관전 HUD 전환 / F7: 복제 영역 지정\n맵 이름 옆 게임 시간 · 왼쪽 아래 자동 미니맵 · 유닛 선택 시 오른쪽 아래 정보창",Location=new Point(30,495),Size=new Size(760,80),ForeColor=Color.Silver});
-        status=new Label {Location=new Point(30,580),Size=new Size(760,40),ForeColor=Color.Turquoise,Text="업데이트 상태 확인 중"}; Controls.Add(status);
-        string state=Path.Combine(Program.Data,"update-status.txt"); updateStatus=File.Exists(state)?File.ReadAllText(state).Trim():"미리보기 · 업데이트 확인 생략";status.Text=updateStatus;
-        watch.Interval=100;watch.Tick+=(s,e)=>Watch();if(!preview)watch.Start();
-        AppDomain.CurrentDomain.ProcessExit+=(s,e)=>{edge.Dispose();fence.Dispose();};FormClosed+=(s,e)=> {edge.Dispose();fence.Dispose();watch.Dispose();if(calibration!=null)calibration.Dispose();if(selector!=null)selector.Close();if(overlay!=null)overlay.Close();}; if(preview) Shown+=(s,e)=>Safe(()=>ShowHud(true));
+        Text="GENEVO / OBSERVER";ClientSize=new Size(1020,860);MinimumSize=new Size(1036,899);BackColor=Color.FromArgb(13,22,30);ForeColor=Color.White;Font=new Font("Malgun Gothic",10);StartPosition=FormStartPosition.CenterScreen;
+        Controls.Add(new Label {Text="GENEVO",Font=new Font("Segoe UI",30,FontStyle.Bold),AutoSize=true,Location=new Point(30,20)});
+        Controls.Add(new Label {Text="REPLAY OBSERVER / v0.4.0",ForeColor=Color.Turquoise,AutoSize=true,Location=new Point(34,82)});
+        game=PathRow("RED ALERT 3",settings.GamePath,125);mod=PathRow("GENEVO MOD",settings.ModPath,202);
+        libraryTitle=new Label {Text="리플레이 · 더블클릭하면 창 모드로 실행",Location=new Point(30,280),Size=new Size(560,25),ForeColor=Color.Turquoise};Controls.Add(libraryTitle);
+        var refresh=Button("새로고침",740,270,110);refresh.Click+=(o,e)=>RefreshReplays();var folder=Button("폴더 변경",865,270,125);folder.Click+=(o,e)=>{using(var dialog=new FolderBrowserDialog {SelectedPath=settings.ReplayFolder})if(dialog.ShowDialog()==DialogResult.OK){settings.ReplayFolder=dialog.SelectedPath;settings.Save();WatchFiles();RefreshReplays();}};
+        library=new ListView {Location=new Point(30,313),Size=new Size(960,245),View=View.Details,ShowItemToolTips=true,FullRowSelect=true,MultiSelect=false,HideSelection=false,BackColor=Color.FromArgb(20,34,44),ForeColor=Color.White,BorderStyle=BorderStyle.FixedSingle};
+        library.Columns.Add("파일",250);library.Columns.Add("플레이어",280);library.Columns.Add("맵",230);library.Columns.Add("수정 시간",170);Controls.Add(library);
+        library.SelectedIndexChanged+=(o,e)=>{if(library.SelectedItems.Count==1){replay.Text=(string)library.SelectedItems[0].Tag;Save();}};
+        library.ItemActivate+=(o,e)=>Safe(LaunchSelectedReplay);
+        Controls.Add(new Label {Text="선택한 리플레이",Location=new Point(30,568),Size=new Size(950,23),ForeColor=Color.Silver});
+        replay=new TextBox {Text=settings.Replay,ReadOnly=true,Location=new Point(30,593),Size=new Size(960,30),BackColor=Color.FromArgb(25,39,50),ForeColor=Color.White};Controls.Add(replay);
+        Button("선택 리플레이 실행",30,642,235).Click+=(o,e)=>Safe(LaunchSelectedReplay);
+        Button("GenEvo 공식 런처",280,642,220).Click+=(o,e)=>Safe(()=>{Save();string exe=Path.Combine(settings.ModPath,"GenEvoLauncher.exe");if(!File.Exists(exe))throw new FileNotFoundException("GenEvoLauncher.exe 경로를 확인하세요.");Process.Start(new ProcessStartInfo(exe){WorkingDirectory=settings.ModPath,UseShellExecute=true});});
+        Button("HUD 켜기",515,642,150).Click+=(o,e)=>Safe(()=>ShowHud(false));Button("미리보기",680,642,150).Click+=(o,e)=>Safe(()=>ShowHud(true));Button("HUD 끄기",845,642,145).Click+=(o,e)=>{hudEnabled=false;if(overlay!=null)overlay.Close();};
+        lockMouse=new CheckBox {Text="마우스 고정 및 가장자리 화면 이동 (F6 / Alt+Tab 해제)",Checked=settings.LockMouse,AutoSize=true,Location=new Point(30,699)};lockMouse.CheckedChanged+=(o,e)=>{settings.LockMouse=lockMouse.Checked;settings.Save();if(!lockMouse.Checked){edge.Dispose();fence.Dispose();}};Controls.Add(lockMouse);
+        Controls.Add(new Label {Text="더블클릭 / Enter: 창 모드 실행 · END: 기본 게임 HUD 숨김 · F8: 관전 HUD\n하단: 진영 아이콘·게임 시간·자금·전력 · 유닛 선택 정보: 오른쪽 아래",Location=new Point(30,739),Size=new Size(960,68),ForeColor=Color.Silver});
+        status=new Label {Location=new Point(30,813),Size=new Size(960,40),ForeColor=Color.Turquoise};Controls.Add(status);string state=Path.Combine(Program.Data,"update-status.txt");updateStatus=File.Exists(state)?File.ReadAllText(state).Trim():"업데이트 상태 없음";status.Text=updateStatus;
+        if(String.IsNullOrWhiteSpace(settings.ReplayFolder)||!Directory.Exists(settings.ReplayFolder)){string selected=String.IsNullOrWhiteSpace(settings.Replay)?null:Path.GetDirectoryName(settings.Replay);settings.ReplayFolder=selected!=null&&Directory.Exists(selected)?selected:Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),@"Red Alert 3\Replays");Directory.CreateDirectory(settings.ReplayFolder);}
+        reload.Interval=700;reload.Tick+=(o,e)=>{reload.Stop();RefreshReplays();};watch.Interval=250;watch.Tick+=(o,e)=>Watch();motion.Interval=20;motion.Tick+=(o,e)=>MoveCamera();if(!preview){watch.Start();motion.Start();WatchFiles();}
+        AppDomain.CurrentDomain.ProcessExit+=(o,e)=>{edge.Dispose();fence.Dispose();};FormClosed+=(o,e)=>{generation++;watch.Dispose();motion.Dispose();reload.Dispose();if(files!=null)files.Dispose();edge.Dispose();fence.Dispose();if(overlay!=null)overlay.Close();};Shown+=(o,e)=>{RefreshReplays();if(preview)Safe(()=>ShowHud(true));};
     }
-    protected override void OnHandleCreated(EventArgs e) {base.OnHandleCreated(e);Native.RegisterHotKey(Handle,700,0x4000,0x75);Native.RegisterHotKey(Handle,701,0x4000,0x76);Native.RegisterHotKey(Handle,702,0x4000,0x77);}
-    protected override void OnHandleDestroyed(EventArgs e) {fence.Dispose();Native.UnregisterHotKey(Handle,700);Native.UnregisterHotKey(Handle,701);Native.UnregisterHotKey(Handle,702);base.OnHandleDestroyed(e);}
-    protected override void WndProc(ref Message m) {if(m.Msg==0x312){if(m.WParam.ToInt32()==700&&lockMouse!=null)lockMouse.Checked=!lockMouse.Checked;if(m.WParam.ToInt32()==701)Safe(Calibrate);if(m.WParam.ToInt32()==702){hudEnabled=!hudEnabled;if(!hudEnabled&&overlay!=null)overlay.Close();if(hudEnabled)Safe(()=>ShowHud(false));}}base.WndProc(ref m);}
-    void Watch() {
-        if(calibrating){edge.Dispose();fence.Dispose();return;}IntPtr h=Native.Game();Rectangle r=Native.Bounds(h);
-        bool active=settings.LockMouse&&h!=IntPtr.Zero&&!Native.IsIconic(h)&&Native.SameProcess(h,Native.GetForegroundWindow())&&(Native.GetAsyncKeyState(0x12)&0x8000)==0;fence.Update(r,active);edge.Update(r,active);
-        status.Text=updateStatus+"\n"+(h==IntPtr.Zero?"게임 창을 기다리는 중":Native.IsIconic(h)?"게임 최소화됨 · F7로 복원 및 영역 지정":r.Width<640?"게임 창 크기를 확인하세요":"게임 감지됨 "+r.Width+"×"+r.Height+" · F7 영역 지정 / F8 HUD");
-        if(hudEnabled&&(overlay==null||overlay.IsDisposed)&&Native.SameProcess(h,Native.GetForegroundWindow())&&!Native.IsIconic(h)&&File.Exists(replay.Text)) {try{ShowHud(false);}catch(Exception ex){hudEnabled=false;Program.Log(ex);status.Text=ex.Message;}}
+    TextBox PathRow(string label,string value,int y){Controls.Add(new Label {Text=label,Location=new Point(30,y),Size=new Size(950,22),ForeColor=Color.FromArgb(115,149,165)});var text=new TextBox {Text=value,Location=new Point(30,y+27),Size=new Size(840,30),BackColor=Color.FromArgb(25,39,50),ForeColor=Color.White};Controls.Add(text);Button("찾기",885,y+25,105).Click+=(o,e)=>{using(var dialog=new FolderBrowserDialog {SelectedPath=text.Text})if(dialog.ShowDialog()==DialogResult.OK)text.Text=dialog.SelectedPath;};return text;}
+    Button Button(string text,int x,int y,int width){var b=new Button {Text=text,Location=new Point(x,y),Size=new Size(width,38),FlatStyle=FlatStyle.Flat,BackColor=Color.FromArgb(26,50,62),ForeColor=Color.White};b.FlatAppearance.BorderColor=Color.FromArgb(51,92,106);Controls.Add(b);return b;}
+    void Safe(Action action){try{action();}catch(Exception ex){Program.Log(ex);MessageBox.Show(this,ex.Message,"Genevo");}}
+    void Save(){settings.GamePath=game.Text;settings.ModPath=mod.Text;settings.Replay=replay.Text;settings.Save();}
+    void WatchFiles(){if(files!=null)files.Dispose();if(!Directory.Exists(settings.ReplayFolder))return;files=new FileSystemWatcher(settings.ReplayFolder,"*.RA3Replay"){NotifyFilter=NotifyFilters.FileName|NotifyFilters.LastWrite|NotifyFilters.Size};FileSystemEventHandler changed=(o,e)=>QueueRefresh();files.Changed+=changed;files.Created+=changed;files.Deleted+=changed;files.Renamed+=(o,e)=>QueueRefresh();files.EnableRaisingEvents=true;}
+    void QueueRefresh(){if(IsDisposed||!IsHandleCreated)return;try{BeginInvoke((Action)(()=>{if(IsDisposed)return;reload.Stop();reload.Start();}));}catch(InvalidOperationException){}}
+    void RefreshReplays(){if(IsDisposed||library==null)return;int version=++generation;string folder=settings.ReplayFolder,modPath=mod.Text;libraryTitle.Text="리플레이를 읽는 중…";
+        System.Threading.Tasks.Task.Run(()=>{var entries=ReplayLibrary.Read(folder);foreach(var item in entries)if(item.Valid)item.Map=ModMetadata.Map(modPath,item.Map);return entries;}).ContinueWith(task=>{if(IsDisposed||!IsHandleCreated)return;try{BeginInvoke((Action)(()=>{if(IsDisposed||version!=generation)return;if(task.IsFaulted){libraryTitle.Text="리플레이 폴더를 읽지 못했습니다.";return;}string selected=replay.Text;library.BeginUpdate();library.Items.Clear();ListViewItem match=null;foreach(var entry in task.Result){var row=new ListViewItem(new[]{entry.Name,entry.Players,entry.Map,entry.Modified.ToString("yyyy-MM-dd HH:mm")}){Tag=entry.Path,ToolTipText=entry.Name+"\n"+entry.Players+"\n"+entry.Map+"\n"+entry.Modified.ToString("yyyy-MM-dd HH:mm")+"\n"+entry.Path};if(!entry.Valid)row.ForeColor=Color.Gray;library.Items.Add(row);if(String.Equals(selected,entry.Path,StringComparison.OrdinalIgnoreCase))match=row;}if(match!=null){match.Selected=true;match.EnsureVisible();}else if(library.Items.Count>0)library.Items[0].Selected=true;else replay.Text="";library.EndUpdate();libraryTitle.Text="리플레이 "+library.Items.Count+"개 · 더블클릭하면 창 모드로 실행";}));}catch(InvalidOperationException){}});
     }
-    TextBox PathRow(string label,string value,int y,bool file) {
-        Controls.Add(new Label {Text=label,Location=new Point(30,y),Size=new Size(750,22),ForeColor=Color.FromArgb(115,149,165)});
-        TextBox t=new TextBox {Text=value,Location=new Point(30,y+27),Size=new Size(650,30),BackColor=Color.FromArgb(25,39,50),ForeColor=Color.White,BorderStyle=BorderStyle.FixedSingle}; Controls.Add(t);
-        Button b=Button("찾기",695,y+25,90); b.Click+=(s,e)=> {if(file) {using(var d=new OpenFileDialog {Filter="RA3 Replay|*.RA3Replay",InitialDirectory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),@"Red Alert 3\Replays")}) if(d.ShowDialog()==DialogResult.OK)t.Text=d.FileName;} else {using(var d=new FolderBrowserDialog {SelectedPath=t.Text})if(d.ShowDialog()==DialogResult.OK)t.Text=d.SelectedPath;}}; return t;
-    }
-    Button Button(string text,int x,int y,int w) {var b=new Button {Text=text,Location=new Point(x,y),Size=new Size(w,38),FlatStyle=FlatStyle.Flat,BackColor=Color.FromArgb(26,50,62),ForeColor=Color.White}; b.FlatAppearance.BorderColor=Color.FromArgb(51,92,106); Controls.Add(b);return b;}
-    void Save() {settings.GamePath=game.Text;settings.ModPath=mod.Text;settings.Replay=replay.Text;settings.Save();}
-    void LaunchReplay() {
-        Save();if(Native.Game()!=IntPtr.Zero)throw new Exception("현재 게임을 종료한 뒤 이 버튼을 눌러주세요. 실행 중인 게임은 자동으로 종료하지 않습니다.");
-        string exe=Path.Combine(settings.GamePath,"RA3.exe");if(!File.Exists(exe))throw new FileNotFoundException("RA3.exe 경로를 확인하세요.");
-        if(!File.Exists(settings.Replay))throw new FileNotFoundException("재생할 리플레이 파일을 선택하세요.");ReplayInfo.Read(settings.Replay);
-        string[] definitions=Directory.GetFiles(settings.ModPath,"*.skudef");if(definitions.Length!=1)throw new Exception("GenEvo 폴더에 .skudef 파일이 하나 있어야 합니다.");
-        Rectangle area=Screen.FromControl(this).WorkingArea;int width=Math.Max(1024,Math.Min(1600,area.Width-40)),height=Math.Max(720,Math.Min(900,area.Height-100));
-        string args="-win -xres "+width+" -yres "+height+" -modConfig \""+definitions[0]+"\" -replayGame \""+Path.GetFullPath(settings.Replay)+"\"";
-        hudEnabled=true;Process.Start(new ProcessStartInfo(exe,args){WorkingDirectory=settings.GamePath,UseShellExecute=true});status.Text="창 모드 리플레이 시작 중 · HUD는 게임 감지 후 자동 표시됩니다.";
-    }
-    void Safe(Action a) {try {a();}catch(Exception ex){Program.Log(ex);MessageBox.Show(this,ex.Message,"Genevo");}}
-    void ShowHud(bool preview) {Save();ReplayInfo info=String.IsNullOrWhiteSpace(settings.Replay)?new ReplayInfo():ReplayInfo.Read(settings.Replay); if(!preview && info.Players.Count==0)throw new Exception("관전할 리플레이 파일을 먼저 선택하세요.");info.Map=ModMetadata.Map(settings.ModPath,info.Map); if(overlay!=null)overlay.Close();hudEnabled=!preview;overlay=new Overlay(settings,info,preview);if(preview)overlay.Show();else status.Text="HUD 준비됨 · 게임으로 돌아가면 표시됩니다. F7: 미니맵 지정";}
-    void Calibrate() {
-        if(calibrating)return;Save();IntPtr h=Native.Game();if(h==IntPtr.Zero)throw new Exception("실행 중인 Red Alert 3 게임 창을 찾지 못했습니다.");
-        calibrating=true;if(overlay!=null)overlay.Close();Native.ShowWindowAsync(h,9);Native.SetForegroundWindow(h);int attempts=0;
-        calibration=new Timer {Interval=200};calibration.Tick+=(s,e)=>{
-            Rectangle bounds=Native.Bounds(h);attempts++;
-            if(Native.IsIconic(h)||bounds.Width<640||bounds.Height<360||!Native.SameProcess(h,Native.GetForegroundWindow())) {if(attempts<25)return;calibration.Dispose();calibrating=false;status.Text="게임 복원 대기 중 · 게임으로 돌아가 F7을 누르세요. 독점 전체 화면은 -win 재실행 필요";return;}
-            calibration.Dispose();selector=new Selector(bounds);selector.FormClosed+=(o,args)=>{if(selector.DialogResult==DialogResult.OK){Rectangle r=selector.Selected;settings.RadarX=(float)r.X/bounds.Width;settings.RadarY=(float)r.Y/bounds.Height;settings.RadarW=(float)r.Width/bounds.Width;settings.RadarH=(float)r.Height/bounds.Height;settings.Save();status.Text="미니맵 영역 저장 완료";}calibrating=false;Native.SetForegroundWindow(h);};selector.Show();
-        };calibration.Start();
-    }
-}
-class Selector : Form {
-    Point start; public Rectangle Selected; bool dragging;Timer cancel=new Timer();
-    protected override bool ShowWithoutActivation {get{return true;}}
-    protected override CreateParams CreateParams {get {var p=base.CreateParams;p.ExStyle|=0x08000000|0x80;return p;}}
-    protected override void WndProc(ref Message m) {if(m.Msg==0x21){m.Result=new IntPtr(3);return;}base.WndProc(ref m);}
-    public Selector(Rectangle bounds) {Text="GENEVO 미니맵 영역 지정";FormBorderStyle=FormBorderStyle.None;StartPosition=FormStartPosition.Manual;Bounds=bounds;ShowInTaskbar=false;TopMost=true;BackColor=Color.Black;Opacity=.45;Cursor=Cursors.Cross;DoubleBuffered=true;cancel.Interval=50;cancel.Tick+=(s,e)=>{if((Native.GetAsyncKeyState(0x1B)&0x8000)!=0)Close();};cancel.Start();FormClosed+=(s,e)=>cancel.Dispose();MouseDown+=(s,e)=>{start=e.Location;dragging=true;Capture=true;};MouseMove+=(s,e)=>{if(dragging){Selected=Rectangle.Intersect(ClientRectangle,Rectangle.FromLTRB(Math.Min(start.X,e.X),Math.Min(start.Y,e.Y),Math.Max(start.X,e.X),Math.Max(start.Y,e.Y)));Invalidate();}};MouseUp+=(s,e)=>{dragging=false;Capture=false;if(Selected.Width>=20&&Selected.Height>=20){DialogResult=DialogResult.OK;Close();}};}
-    protected override void OnPaint(PaintEventArgs e) {base.OnPaint(e);e.Graphics.DrawString("게임의 미니맵 영역을 드래그하세요 · ESC 취소",SystemFonts.CaptionFont,Brushes.White,25,25);e.Graphics.DrawRectangle(Pens.Cyan,Selected);}
+    void LaunchSelectedReplay(){if(library.SelectedItems.Count==1)replay.Text=(string)library.SelectedItems[0].Tag;LaunchReplay();}
+    internal static string LaunchArguments(string sku,string path,int width,int height){return "-win -xres "+width+" -yres "+height+" -modConfig \""+sku+"\" -replayGame \""+Path.GetFullPath(path)+"\"";}
+    void LaunchReplay(){Save();if(Native.Game()!=IntPtr.Zero)throw new Exception("현재 게임을 종료한 뒤 리플레이를 실행하세요. 실행 중인 게임은 자동 종료하지 않습니다.");string exe=Path.Combine(settings.GamePath,"RA3.exe");if(!File.Exists(exe))throw new FileNotFoundException("RA3.exe 경로를 확인하세요.");if(!File.Exists(settings.Replay))throw new FileNotFoundException("목록에서 리플레이를 선택하세요.");ReplayInfo.Read(settings.Replay);var definitions=Directory.GetFiles(settings.ModPath,"*.skudef");if(definitions.Length!=1)throw new Exception("GenEvo 폴더에 .skudef 파일이 하나 있어야 합니다.");Rectangle area=Screen.FromControl(this).WorkingArea;int width=Math.Max(1024,Math.Min(1600,area.Width-40)),height=Math.Max(720,Math.Min(900,area.Height-100));hudEnabled=true;Process.Start(new ProcessStartInfo(exe,LaunchArguments(definitions[0],settings.Replay,width,height)){WorkingDirectory=settings.GamePath,UseShellExecute=true});status.Text="창 모드 리플레이를 실행하는 중…";}
+    void ShowHud(bool preview){Save();var info=String.IsNullOrWhiteSpace(settings.Replay)?new ReplayInfo():ReplayInfo.Read(settings.Replay);if(!preview&&info.Players.Count==0)throw new Exception("리플레이를 먼저 선택하세요.");info.Map=ModMetadata.Map(settings.ModPath,info.Map);if(overlay!=null)overlay.Close();hudEnabled=!preview;overlay=new Overlay(settings,info,preview);if(preview)overlay.Show();}
+    void Watch(){IntPtr h=Native.Game();Rectangle r=Native.Bounds(h);status.Text=updateStatus+"\n"+(h==IntPtr.Zero?"게임 창을 기다리는 중":Native.IsIconic(h)?"게임 최소화됨":r.Width<640?"게임 창 크기를 확인하세요":"게임 감지 "+r.Width+"×"+r.Height+" · "+edge.Status);if(hudEnabled&&(overlay==null||overlay.IsDisposed)&&Native.SameProcess(h,Native.GetForegroundWindow())&&!Native.IsIconic(h)&&File.Exists(replay.Text)){try{ShowHud(false);}catch(Exception ex){hudEnabled=false;Program.Log(ex);status.Text=ex.Message;}}}
+    void MoveCamera(){IntPtr h=Native.Game();Rectangle r=Native.Bounds(h);bool active=settings.LockMouse&&h!=IntPtr.Zero&&!Native.IsIconic(h)&&Native.SameProcess(h,Native.GetForegroundWindow())&&(Native.GetAsyncKeyState(0x12)&0x8000)==0;fence.Update(r,active);edge.Update(h,r,active);}
+    protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);Native.RegisterHotKey(Handle,700,0x4000,0x75);Native.RegisterHotKey(Handle,702,0x4000,0x77);}
+    protected override void OnHandleDestroyed(EventArgs e){edge.Dispose();fence.Dispose();Native.UnregisterHotKey(Handle,700);Native.UnregisterHotKey(Handle,702);base.OnHandleDestroyed(e);}
+    protected override void WndProc(ref Message m){if(m.Msg==0x312){if(m.WParam.ToInt32()==700&&lockMouse!=null)lockMouse.Checked=!lockMouse.Checked;if(m.WParam.ToInt32()==702){hudEnabled=!hudEnabled;if(!hudEnabled&&overlay!=null)overlay.Close();if(hudEnabled)Safe(()=>ShowHud(false));}}base.WndProc(ref m);}
 }
 class Overlay : Form {
-    Settings settings;ReplayInfo info;bool preview;Timer timer=new Timer();Bitmap radar;IntPtr game;Rectangle gameBounds;string captureState="F7로 미니맵 영역을 지정하세요";
+    Settings settings;ReplayInfo info;bool preview;Timer timer=new Timer();IntPtr game;Rectangle gameBounds;
     LiveGame live=new LiveGame();Telemetry liveFeed;
-    RadarMap mapRadar;
     Func<IntPtr> gameWindow,foregroundWindow;
     public Overlay(Settings s,ReplayInfo i,bool p,Func<IntPtr> windowProvider=null,Func<IntPtr> foregroundProvider=null) {settings=s;info=i;preview=p;gameWindow=windowProvider??Native.Game;foregroundWindow=foregroundProvider??Native.GetForegroundWindow;FormBorderStyle=FormBorderStyle.None;ShowInTaskbar=p;TopMost=true;BackColor=Color.Magenta;TransparencyKey=Color.Magenta;DoubleBuffered=true;StartPosition=FormStartPosition.Manual;
         if(p){Bounds=new Rectangle(100,100,1100,660);Text="HUD 미리보기 · ESC 닫기";KeyPreview=true;KeyDown+=(o,e)=>{if(e.KeyCode==Keys.Escape)Close();};}
-        mapRadar=new RadarMap(s.ModPath,i.MapAsset);timer.Interval=100;timer.Tick+=(o,e)=>RefreshState();timer.Start();FormClosed+=(o,e)=>{timer.Dispose();if(radar!=null)radar.Dispose();};}
+        timer.Interval=100;timer.Tick+=(o,e)=>RefreshState();timer.Start();FormClosed+=(o,e)=>timer.Dispose();}
     protected override bool ShowWithoutActivation {get{return !preview;}}
     protected override void WndProc(ref Message m) {if(!preview&&m.Msg==0x21){m.Result=new IntPtr(3);return;}base.WndProc(ref m);}
     protected override void OnActivated(EventArgs e) {base.OnActivated(e);if(!preview&&game!=IntPtr.Zero)Native.SetForegroundWindow(game);}
-    protected override void Dispose(bool disposing) {if(disposing){timer.Dispose();live.Dispose();if(mapRadar!=null)mapRadar.Dispose();if(radar!=null){radar.Dispose();radar=null;}}base.Dispose(disposing);}
+    protected override void Dispose(bool disposing) {if(disposing){timer.Dispose();live.Dispose();}base.Dispose(disposing);}
     protected override CreateParams CreateParams {get {var p=base.CreateParams;if(!preview)p.ExStyle|=0x08000000|0x20|0x80;return p;}}
     public void RefreshState() {
         if(preview){Invalidate();return;}
         game=gameWindow();gameBounds=Native.Bounds(game);
         bool active=game!=IntPtr.Zero&&!Native.IsIconic(game)&&Native.SameProcess(foregroundWindow(),game)&&gameBounds.Width>=640&&gameBounds.Height>=360;
         if(!active){if(Visible)Hide();return;}
-        liveFeed=live.Poll(game,info,settings.Replay);Bounds=gameBounds;if(!Visible)Show();CaptureRadar();Invalidate();
-    }
-    void CaptureRadar() {
-        if(mapRadar.Ready)return;
-        if(settings.RadarW<=0||settings.RadarH<=0)return;
-        Rectangle r=new Rectangle((int)(settings.RadarX*Width),(int)(settings.RadarY*Height),(int)(settings.RadarW*Width),(int)(settings.RadarH*Height));
-        int side=Math.Min(238,Math.Max(130,Width/5));Rectangle destination=new Rectangle(12,Height-side-12,side,side);
-        if(r.Width<20||r.Height<20||!ClientRectangle.Contains(r)||r.IntersectsWith(destination)){captureState="미니맵 원본 위치를 다시 지정하세요";if(radar!=null){radar.Dispose();radar=null;}return;}
-        try{using(var b=new Bitmap(r.Width,r.Height)){using(var g=Graphics.FromImage(b))g.CopyFromScreen(gameBounds.X+r.X,gameBounds.Y+r.Y,0,0,r.Size,CopyPixelOperation.SourceCopy);if(radar!=null)radar.Dispose();radar=new Bitmap(b);}captureState="LIVE RADAR";}catch{captureState="미니맵 캡처 실패";if(radar!=null){radar.Dispose();radar=null;}}
+        liveFeed=live.Poll(game,info,settings.Replay);Bounds=gameBounds;if(!Visible)Show();Invalidate();
     }
     protected override void OnPaint(PaintEventArgs e) {base.OnPaint(e);Render(e.Graphics,ClientSize);}
     public void Render(Graphics g,Size size) {
         int w=size.Width,h=size.Height;g.SmoothingMode=SmoothingMode.AntiAlias;
         if(preview){g.Clear(Color.FromArgb(25,35,41));using(var f=new Font("Malgun Gothic",15))g.DrawString("관전 HUD 미리보기  /  ESC 닫기",f,Brushes.Gray,30,30);}
-        int radarSize=Math.Min(238,Math.Max(130,w/5));Rectangle box=new Rectangle(12,h-radarSize-12,radarSize,radarSize);
-        using(var bg=new SolidBrush(Color.FromArgb(10,23,31)))g.FillRectangle(bg,box);g.DrawRectangle(Pens.Teal,box);
-        if(mapRadar.Ready)mapRadar.Draw(g,Rectangle.Inflate(box,-4,-4),liveFeed==null?null:liveFeed.Radar);else if(radar!=null)g.DrawImage(radar,Rectangle.Inflate(box,-4,-4));else using(var f=new Font("Malgun Gothic",9))g.DrawString(captureState,f,Brushes.Silver,new RectangleF(box.X+15,box.Y+box.Height/2-20,box.Width-30,70));
         var feed=preview?null:liveFeed??Feed.Read(settings.Replay);bool connected=feed!=null;
         int reserve=feed!=null&&feed.Selection!=null?Math.Min(330,w/3)+12:0;
-        int x=box.Right+8, width=Math.Max(460,Math.Min(w-x-12-reserve,860));int rows=Math.Max(2,info.Players.Count);int y=h-12-36-rows*36;
+        int x=12, width=Math.Max(460,Math.Min(w-x-12-reserve,860));int rows=Math.Max(2,info.Players.Count);int y=h-12-36-rows*36;
         using(var bg=new SolidBrush(Color.FromArgb(11,26,36)))g.FillRectangle(bg,x,y,width,36+rows*36);
         using(var small=new Font("Malgun Gothic",9))using(var normal=new Font("Malgun Gothic",10,FontStyle.Bold)) {
             string map=info.Map.Replace("283data/maps/","");int mapWidth=Math.Max(70,width-340);Draw(g,map,small,Brushes.LightSteelBlue,new Rectangle(x+10,y+4,mapWidth,27));Draw(g,feed!=null&&!String.IsNullOrEmpty(feed.GameTime)?feed.GameTime:"--:--",normal,Brushes.White,new Rectangle(x+mapWidth+16,y+3,90,27));
@@ -222,8 +190,8 @@ class Overlay : Form {
                 Color c=player==null?Color.DimGray:player.Color;using(var b=new SolidBrush(c))g.FillRectangle(b,x,ry,5,35);
                 TelemetryPlayer t=connected&&feed.Players!=null&&player!=null?feed.Players.FirstOrDefault(z=>z.Slot==player.Slot):null;
                 string faction=t!=null&&!String.IsNullOrWhiteSpace(t.Faction)?t.Faction:player==null?"진영 대기":player.Faction;
-                Draw(g,faction,small,Brushes.Silver,new Rectangle(x+14,ry+7,100,25));
-                Draw(g,player==null?"플레이어 대기":player.Name,normal,Brushes.White,new Rectangle(x+118,ry+6,Math.Max(75,width-440),25));
+                FactionIcons.Draw(g,new Rectangle(x+13,ry+4,27,27),faction);Draw(g,faction,small,Brushes.Silver,new Rectangle(x+48,ry+7,106,25));
+                Draw(g,player==null?"플레이어 대기":player.Name,normal,Brushes.White,new Rectangle(x+160,ry+6,Math.Max(75,width-482),25));
                 Draw(g,"$ "+(t!=null&&t.Credits.HasValue?t.Credits.Value.ToString("N0"):"—"),normal,Brushes.White,new Rectangle(x+width-300,ry+6,105,25));
                 Draw(g,t!=null&&t.Income.HasValue?"수입 "+t.Income.Value.ToString("N0"):"수입 미지원",small,Brushes.LightSteelBlue,new Rectangle(x+width-190,ry+7,100,25));
                 Draw(g,"전력 "+(t!=null&&t.PowerUsed.HasValue&&t.PowerTotal.HasValue?t.PowerUsed+"/"+t.PowerTotal:"—"),small,Brushes.LightSteelBlue,new Rectangle(x+width-90,ry+7,88,25));
@@ -239,7 +207,6 @@ static class Tests {
         try {
             if(LiveGame.Clock(0)!="00:00"||LiveGame.Clock(15*61)!="01:01"||LiveGame.Clock(15*3661)!="01:01:01")throw new Exception("Replay clock formatting regression");
             var edgeBounds=new Rectangle(100,200,1600,900);if(EdgeScroll.Directions(edgeBounds,new Point(900,650),10).Length!=0||!EdgeScroll.Directions(edgeBounds,new Point(1699,650),10).SequenceEqual(new[]{0x27})||!EdgeScroll.Directions(edgeBounds,new Point(100,200),10).SequenceEqual(new[]{0x25,0x26})||EdgeScroll.Directions(edgeBounds,new Point(1700,650),10).Length!=0)throw new Exception("Edge-scroll direction regression");
-            byte[] tga=new byte[24];tga[2]=2;tga[12]=1;tga[14]=2;tga[16]=24;tga[18]=255;tga[23]=255;using(var decoded=RadarMap.DecodeTga(tga)){if(decoded.GetPixel(0,0).R!=255||decoded.GetPixel(0,1).B!=255)throw new Exception("Radar TGA orientation regression");}
             if(!Native.IsGameProcess("ra3_1.12.game")||Native.IsGameProcess("ra3-helper")||Native.IsGameProcess("GenevoLauncher"))throw new Exception("Game process filter regression");
             using(var fixture=new Form {Text="Genevo test game",ClientSize=new Size(900,600),StartPosition=FormStartPosition.Manual,Location=new Point(10,10)})using(var helper=new Form {ClientSize=new Size(100,25),ShowInTaskbar=false}) {
                 fixture.Show();helper.Show();Application.DoEvents();var ids=new HashSet<uint>{(uint)Process.GetCurrentProcess().Id};if(Native.FindGameWindow(ids)!=fixture.Handle)throw new Exception("Small helper window selected instead of game");
@@ -249,13 +216,26 @@ static class Tests {
             }
             string temp=Path.GetTempFileName();
             try {File.WriteAllText(temp,"RA3 REPLAY HEADER;M=283data/maps/test;MC=0;S=HAlpha,0,0,TT,1,24,-1:HBravo,0,0,TT,4,25,-1:Hpost Commentator,0,0,TT,-1,12,-1:;");var r=ReplayInfo.Read(temp);if(r.Players.Count!=2||r.Players[0].Name!="Alpha"||r.Players[1].Faction!="진영 #25")throw new Exception("Replay parsing failed");File.WriteAllText(temp,"bad");bool rejected=false;try{ReplayInfo.Read(temp);}catch(InvalidDataException){rejected=true;}if(!rejected)throw new Exception("Bad replay accepted");} finally{File.Delete(temp);}
+            string libraryFolder=Path.Combine(Path.GetTempPath(),"genevo-replay-test-"+Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(libraryFolder);
+            try {
+                string good=Path.Combine(libraryFolder,"valid.RA3Replay"),bad=Path.Combine(libraryFolder,"broken.RA3Replay"),other=Path.Combine(libraryFolder,"ignore.txt");
+                File.WriteAllText(good,"RA3 REPLAY HEADER;M=283data/maps/test;MC=0;S=HAlpha,0,0,TT,1,24,-1:HBravo,0,0,TT,4,25,-1:;");
+                File.WriteAllText(bad,"bad");File.WriteAllText(other,"ignore");File.SetLastWriteTimeUtc(good,DateTime.UtcNow.AddHours(-1));
+                var entries=ReplayLibrary.Read(libraryFolder);
+                if(entries.Count!=2||entries[0].Path!=bad||entries[0].Valid||!entries[1].Valid||entries[1].Players!="Alpha vs Bravo")throw new Exception("Replay library filtering/order/metadata regression");
+                string arguments=Launcher.LaunchArguments(@"C:\Gen Evo\mod.skudef",good,1600,900);
+                if(arguments!="-win -xres 1600 -yres 900 -modConfig \"C:\\Gen Evo\\mod.skudef\" -replayGame \""+Path.GetFullPath(good)+"\"")throw new Exception("Windowed replay arguments regression");
+                File.Delete(good);File.Delete(bad);File.Delete(other);
+            }finally{foreach(string file in Directory.GetFiles(libraryFolder))File.Delete(file);Directory.Delete(libraryFolder);}
+            if(FactionIcons.Kind("GLA 독소")!="GLA"||FactionIcons.Kind("미국 레이저")!="USA"||FactionIcons.Kind("중국")!="CHINA"||FactionIcons.Kind("진영 대기")!="UNKNOWN")throw new Exception("Faction icon mapping regression");
             string real=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),@"Red Alert 3\Replays\LazvsGLAV#2.RA3Replay");
             var info=File.Exists(real)?ReplayInfo.Read(real):new ReplayInfo();if(File.Exists(real)&&info.Players.Count!=2)throw new Exception("Real replay parsing failed");
             if(File.Exists(real)&&Directory.Exists(Settings.Load().ModPath)&&info.Map.EndsWith("genevo033_aymcam_skrm_01")){string display=ModMetadata.Map(Settings.Load().ModPath,info.Map);if(display!="[GenEvo-Dev] Cold Drops")throw new Exception("Real BIG/map metadata decode failed");info.Map=display;}
             if(ModMetadata.Faction("FactionGLAToxinGeneral")!="GLA 독소"||ModMetadata.Faction("FactionAmerica")!="미국")throw new Exception("Faction metadata decode failed");
             using(var form=new Overlay(new Settings(),info,true))using(var bitmap=new Bitmap(1330,736))using(var graphics=Graphics.FromImage(bitmap)){form.Render(graphics,bitmap.Size);bitmap.Save(Path.Combine(Program.Data,"hud-preview.png"));}
             using(var launcher=new Launcher(false)){launcher.Show();Application.DoEvents();using(var bitmap=new Bitmap(launcher.Width,launcher.Height)){launcher.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size));bitmap.Save(Path.Combine(Program.Data,"launcher-preview.png"));}launcher.Close();}
-            File.WriteAllText(Path.Combine(Program.Data,"test-result.txt"),"PASS: game window selection, minimized window restore, HUD visibility/focus/bounds, replay metadata, malformed replay, real replay, HUD render");return 0;
+            File.WriteAllText(Path.Combine(Program.Data,"test-result.txt"),"PASS: game window selection, minimized window restore, HUD visibility/focus/bounds, replay metadata, malformed replay, real replay, replay library, windowed launch arguments, faction icons, HUD render");return 0;
         }catch(Exception ex){Program.Log(ex);File.WriteAllText(Path.Combine(Program.Data,"test-result.txt"),ex.ToString());return 1;}
     }
 }
